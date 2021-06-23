@@ -1,173 +1,210 @@
-pragma solidity ^0.5.0;
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
 
-import "openzeppelin-solidity/contracts/token/ERC721/IERC721Receiver.sol";
-import "@ensdomains/ens/contracts/ENS.sol";
-import "./BaseRegistrar.sol";
-import "openzeppelin-solidity/contracts/math/SafeMath.sol";
-import "./RadicalFreeholdToken.sol";
-import "./RadicalLeaseholdToken.sol";
-import "./BaseRegistrarController.sol";
+import "@openzeppelin/contracts/utils/Counters.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 
-contract RadicalManager is IERC721Receiver {
+import "./PatronageToken.sol";
+import "./RadicalToken.sol";
+
+contract RadicalManager {
     using SafeMath for uint256;
+    using Counters for Counters.Counter;
 
-    RadicalLeaseholdToken public leasehold;
-    RadicalFreeholdToken public freehold;
-    // ENS ens = ENS(0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e);
-    BaseRegistrar registrar = BaseRegistrar(0x57f1887a8BF19b14fC0dF6Fd9B2acc9Af147eA85);
-    BaseRegistrarController registrarController = BaseRegistrarController(0x283Af0B28c62C092C9727F1Ee09c02CA627EB7F5);
+    RadicalToken public radicalToken;
+    PatronageToken public patronageToken;
 
-    bytes4 constant ERC721_RECEIVED = 0x150b7a02;
+    mapping (uint256 => uint256) private _depositedRent;
+    mapping (uint256 => uint256) private _lastRentSettlement;
 
-    mapping (uint256 => uint256) _depositedRent;
-    mapping (uint256 => uint256) _lastRentSettlement;
+    Counters.Counter private _tokenIds;
 
-    event Radicalised(address indexed owner, uint256 indexed tokenId);
-    event Deradicalised(address indexed owner, uint256 indexed tokenId);
+    // EVENTS
+
+    event Minted(address indexed owner, uint256 indexed tokenId, uint256 rate, uint256 price);
+    event Sold(address indexed from, address indexed to, uint256 indexed tokenId, uint256 price);
     event RentDeposited(address indexed depositor, uint256 indexed tokenId, uint256 amount);
     event RentWithdrawn(address indexed withdrawer, uint256 indexed tokenId, uint256 amount);
     event RentCollected(address indexed collector, uint256 indexed tokenId, uint256 amount);
+    event PriceChanged(address indexed owner, uint256 indexed tokenId, uint256 oldPrice, uint256 newPrice);
 
-    modifier onlyLeaseholderOrContract(uint256 tokenId) {
-        require(
-            msg.sender == leasehold.ownerOf(tokenId) || msg.sender == address(leasehold) || msg.sender == address(this),
-            "RadicalManager: action can only be performed by leaseholder or contract"
-        );
+    // MODIFIERS
+
+    modifier onlyRadicalHolder(uint256 tokenId) {
+        require(msg.sender == radicalToken.ownerOf(tokenId), "RadicalManager: action can only be performed by radical token holder");
         _;
     }
 
-    modifier onlyLeaseholdContract() {
-        require(msg.sender == address(leasehold), "RadicalManager: action can only be performed by leasehold contract");
+    modifier notRadicalHolder(uint256 tokenId) {
+        require(msg.sender != radicalToken.ownerOf(tokenId), "RadicalManager: action cannot be performed by radical token holder");
         _;
     }
 
-    modifier onlyFreeholder(uint256 tokenId) {
-        require(msg.sender == freehold.ownerOf(tokenId), "RadicalManager: action can only be performed by freeholder");
+    modifier onlyPatronageHolder(uint256 tokenId) {
+        require(msg.sender == patronageToken.ownerOf(tokenId), "RadicalManager: action can only be performed by patronage token holder");
         _;
     }
 
-    constructor() public {
-        leasehold = new RadicalLeaseholdToken();
-        freehold = new RadicalFreeholdToken();
+    // CONTRUCTOR
+
+    constructor(RadicalToken _radicalToken, PatronageToken _patronageToken) {
+        radicalToken = _radicalToken;
+        patronageToken = _patronageToken;
     }
 
-    // Parse data sent to onReceivedERC721
-    function _parseBytes(bytes memory b) private pure returns (uint256, uint256) {
-        uint256 price;
-        uint256 rate;
-        for (uint i = 0; i < 64; i++) {
-            if(i < 32) {
-                price = price.add(uint8(b[i]) * (2 ** (8 * (32 - (i + 1))))); // 1, 2, 3
-            } else {
-                rate = rate.add(uint8(b[i]) * (2 ** (8 * (32 - (i - 31))))); // 33, 34
-            }
-        }
-        return (price, rate);
-    }
+    // VIEW FUNCTIONS
 
-    // When an ERC721 token is sent to the manager, a leasehold and freehold token
-    // are minted using the passed parameters.
-    function onERC721Received(
-        address /* operator */,
-        address from,
-        uint256 tokenId,
-        bytes memory data
-    ) public returns (bytes4) {
-        // TODO: Check that only ENS tokens can be used
-        (uint256 price, uint256 rate) = _parseBytes(data);
-        leasehold.mint(from, tokenId, price, rate);
-        freehold.mint(from, tokenId);
-
-        emit Radicalised(from, tokenId);
-        return ERC721_RECEIVED;
-    }
-
-    function deradicalise(uint256 tokenId) public {
-        require(freehold.ownerOf(tokenId) == msg.sender, "Only freehold owners can deradicalise tokens");
-        require(leasehold.ownerOf(tokenId) == msg.sender, "Only leasehold owners can deradicalise tokens");
-        freehold.burn(msg.sender, tokenId);
-        leasehold.burn(msg.sender, tokenId);
-        registrar.transferFrom(address(this), msg.sender, tokenId);
-        emit Deradicalised(msg.sender, tokenId);
-    }
-
-    function depositRentAndRenew(uint256 tokenId, string memory name, uint duration) public payable onlyLeaseholderOrContract(tokenId){
-        uint price = registrarController.rentPrice(name, duration);
-        require(msg.value >= price, "Funds are insufficient to renew domain name");
-        registrarController.renew.value(price)(name, duration);
-        uint forRent = msg.value - price; // forRent is >= 0
-
-        this.depositRent.value(forRent)(tokenId);
-    }
-
-    // Deposit rent as prepayment
-    function depositRent(uint256 tokenId) public payable onlyLeaseholderOrContract(tokenId) {
-        _depositedRent[tokenId] = rentBalance(tokenId).add(msg.value);
-
-        address leaseholder = leasehold.ownerOf(tokenId);
-        emit RentDeposited(leaseholder, tokenId, msg.value);
-    }
-
-    // Withdraw an amount of prepaid rent
-    // Can only be withdrawn if it is not claimable by the freeholder
-    // CAUTION: If no/little rent is left, the leasehold is at risk of repossession
-    function withdrawRent(uint256 tokenId, uint256 amount) public onlyLeaseholderOrContract(tokenId) {
-        uint256 rent = collectableRent(tokenId);
-        uint256 depositedRent = rentBalance(tokenId);
-        require(depositedRent >= rent, "RadicalManager: not enough rent deposited");
-
-        uint256 available = depositedRent.sub(rent);
-        uint256 withdrawAmount = available < amount ? available : amount;
-
-        _depositedRent[tokenId] = depositedRent.sub(withdrawAmount);
-        address leaseholder = leasehold.ownerOf(tokenId);
-        if (withdrawAmount > 0) address(uint160(leaseholder)).transfer(withdrawAmount);
-        emit RentWithdrawn(leaseholder, tokenId, withdrawAmount);
-    }
-
-    // Collect currently owed rent.
-    // Calculates the amount of rent that is due, and withdraws this.
-    // Updates the last settlement variable.
-    // If the deposited rent can not cover the rent owed, the leasehold token is
-    // repossessed to the freeholder.
-    function collectRent(uint256 tokenId) public {
-        uint256 rent = collectableRent(tokenId);
-        uint256 rentBalance = rentBalance(tokenId);
-        _lastRentSettlement[tokenId] = block.timestamp;
-        address freeholder = freehold.ownerOf(tokenId);
-
-        // If the leaseholder can't pay their rent, their property is repossed
-        if (rentBalance < rent) {
-            rent = rentBalance;
-            leasehold.repossess(freeholder, tokenId);
-        }
-
-        // Transfer rent to freeholder
-        _depositedRent[tokenId] = rentBalance.sub(rent);
-        if (rent > 0) address(uint160(freeholder)).transfer(rent);
-        emit RentCollected(freeholder, tokenId, rent);
-    }
-
-    function rentBalance(uint256 tokenId) public view returns (uint256) {
+    function depositedRentFor(uint256 tokenId) public view returns (uint256) {
         return _depositedRent[tokenId];
     }
 
-    function collectableRent(uint256 tokenId) public view returns (uint256) {
+    function owedRentFor(uint256 tokenId) public view returns (uint256) {
         uint256 lastSettlement = _lastRentSettlement[tokenId];
         uint256 timePassed = block.timestamp.sub(lastSettlement);
-        uint256 rentPerYear = leasehold.rentOf(tokenId);
-        uint256 rent = rentPerYear.div(52 weeks).mul(timePassed); // Not entirely accurate due to leap years
+        uint256 rentPerYear = radicalToken.rentOf(tokenId);
+        uint256 owedRent = rentPerYear.div(52 weeks).mul(timePassed); // Not entirely accurate due to leap years
 
-        return rent;
+        return owedRent;
     }
 
-    function withdrawableRent(uint256 tokenId) public view returns (uint256) {
-        uint256 rentBalance = rentBalance(tokenId);
-        uint256 rentDue = collectableRent(tokenId);
-        return rentBalance > rentDue ? rentBalance - rentDue : 0;
+    function collectableRentFor(uint256 tokenId) public view returns (uint256) {
+        uint256 owedRent = owedRentFor(tokenId);
+        uint256 depositedRent = depositedRentFor(tokenId);
+
+        return depositedRent >= owedRent ? owedRent : depositedRent;
     }
 
-    function changeDomainController(uint256 tokenId, address newController) external onlyLeaseholdContract {
-        registrar.reclaim(tokenId, newController);
+    function withdrawableRentFor(uint256 tokenId) public view returns (uint256) {
+        uint256 depositedRent = depositedRentFor(tokenId);
+        uint256 collectableRent = collectableRentFor(tokenId);
+        return depositedRent > collectableRent ? depositedRent - collectableRent : 0;
+    }
+
+    function priceOf(uint256 tokenId) public view returns (uint256) {
+        uint256 withdrawableRent = withdrawableRentFor(tokenId);
+        bool sameOwner = radicalToken.ownerOf(tokenId) == patronageToken.ownerOf(tokenId);
+        if (withdrawableRent == 0 && !sameOwner) return 0;
+        return radicalToken.priceOf(tokenId);
+    }
+
+    function rateOf(uint256 tokenId) public view returns (uint256) {
+        return radicalToken.rateOf(tokenId);
+    }
+
+    function rentOf(uint256 tokenId) public view returns (uint256) {
+        return radicalToken.rentOf(tokenId);
+    }
+
+    function foreclosureTimestampOf(uint256 tokenId) public view returns (uint256) {
+        uint256 rentRemaining = withdrawableRentFor(tokenId);
+        uint256 rentPerYear = radicalToken.rentOf(tokenId);
+        uint256 timeRemaining = (rentRemaining / rentPerYear) * 52 weeks;
+
+        uint256 forecloseureTimestamp = block.timestamp + timeRemaining;
+
+        return forecloseureTimestamp;
+    }
+
+    // PUBLIC FUNCTIONS
+
+    function mint(
+        address to,
+        uint256 initialPrice,
+        uint256 rate
+    ) public {
+        _tokenIds.increment();
+        uint256 tokenId = _tokenIds.current();
+
+        radicalToken.mint(to, tokenId, initialPrice, rate);
+        patronageToken.mint(to, tokenId);
+
+        emit Minted(to, tokenId, rate, initialPrice);
+    }
+
+    function setPriceOf(uint256 tokenId, uint256 newPrice) public onlyRadicalHolder(tokenId) {
+        // Settle using old price first
+        _collectRent(tokenId);
+
+        // Set a new price
+        uint256 oldPrice = radicalToken.priceOf(tokenId);
+        radicalToken.setPriceOf(tokenId, newPrice);
+
+        emit PriceChanged(radicalToken.ownerOf(tokenId), tokenId, oldPrice, newPrice);
+    }
+
+    function depositRent(uint256 tokenId) public payable onlyRadicalHolder(tokenId) {
+        _depositRent(tokenId, msg.value);
+    }
+
+    function withdrawRent(uint256 tokenId, uint256 amount) public onlyRadicalHolder(tokenId) {
+        _withdrawRent(tokenId, amount);
+    }
+
+    function collectRent(uint256 tokenId) public onlyPatronageHolder(tokenId) {
+        _collectRent(tokenId);
+    }
+
+    function forceBuy(uint256 tokenId, uint256 maxPrice) public payable notRadicalHolder(tokenId) {
+        // User has to provide their max purchase price so they don't get sandwiched
+        uint256 price = priceOf(tokenId);
+        require(price <= maxPrice, "RadicalManager: token price is higher than max price");
+        require(msg.value >= price, "RadicalManager: did not provide enough ETH for purchase");
+
+        // Do all calculations before taking any actions
+        address previousOwner = radicalToken.ownerOf(tokenId);
+        uint256 leftover = msg.value - price;
+
+        // Settle existing rent deposits
+        // TODO: Make sure this isn't vulnerable to re-entrancy
+        _collectRent(tokenId);
+        _withdrawRent(tokenId, 2 ** 256 - 1);
+
+        // Transfer token from previous owner to ms.sender
+        radicalToken.forceTransfer(previousOwner, msg.sender, tokenId);
+
+        // Send money to the previous owner
+        payable(previousOwner).transfer(price);
+
+        _depositRent(tokenId, leftover);
+
+        emit Sold(previousOwner, msg.sender, tokenId, price);
+    }
+
+    // INTERNAL FUNCTIONS
+
+    function _depositRent(uint256 tokenId, uint256 amount) internal {
+        _depositedRent[tokenId] = depositedRentFor(tokenId).add(amount);
+
+        address radicalHolder = radicalToken.ownerOf(tokenId);
+        emit RentDeposited(radicalHolder, tokenId, amount);
+    }
+
+    function _collectRent(uint256 tokenId) internal {
+        uint256 collectableRent = collectableRentFor(tokenId);
+
+        // Sets last settlement date (TODO: could have calculation issues when collectableRent < owedRent)
+        _lastRentSettlement[tokenId] = block.timestamp;
+        _depositedRent[tokenId] = depositedRentFor(tokenId).sub(collectableRent);
+
+        // Transfer rent to patronage holder
+        address patronageHolder = patronageToken.ownerOf(tokenId);
+        if (collectableRent > 0) payable(patronageHolder).transfer(collectableRent);
+
+        emit RentCollected(patronageHolder, tokenId, collectableRent);
+    }
+
+    function _withdrawRent(uint256 tokenId, uint256 amount) internal {
+        uint256 withdrawableRent = withdrawableRentFor(tokenId);
+
+        // If the requested amount > available, cap at available amount
+        uint256 withdrawAmount = withdrawableRent < amount ? withdrawableRent : amount;
+
+        uint256 depositedRent = depositedRentFor(tokenId);
+        _depositedRent[tokenId] = depositedRent.sub(withdrawAmount);
+
+        address radicalHolder = radicalToken.ownerOf(tokenId);
+        if (withdrawableRent > 0) payable(radicalHolder).transfer(withdrawAmount);
+
+        emit RentWithdrawn(radicalHolder, tokenId, withdrawAmount);
     }
 }
