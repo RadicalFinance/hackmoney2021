@@ -4,7 +4,10 @@
   "private": true,
   "dependencies": {
     "@openzeppelin/contracts": "^4.1.0",
-    "ethers": "^5.3.1"
+    "@superfluid-finance/ethereum-contracts": "^1.0.0-rc.4",
+    "@superfluid-finance/js-sdk": "^0.4.3",
+    "ethers": "^5.3.1",
+    "solidity-bytes-utils": "^0.8.0"
   },
   "scripts": {
     "pretest": "test/start_ganache_fork.sh > /dev/null &",

@@ -7,12 +7,12 @@ import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "./PatronageToken.sol";
 import "./RadicalToken.sol";
 
-contract RadicalManager {
+contract RadicalManagerV1 {
     using SafeMath for uint256;
     using Counters for Counters.Counter;
 
-    RadicalToken public radicalToken;
-    PatronageToken public patronageToken;
+    RadicalTokenV1 public radicalToken;
+    PatronageTokenV1 public patronageToken;
 
     mapping (uint256 => uint256) private _depositedRent;
     mapping (uint256 => uint256) private _lastRentSettlement;
@@ -47,7 +47,7 @@ contract RadicalManager {
 
     // CONTRUCTOR
 
-    constructor(RadicalToken _radicalToken, PatronageToken _patronageToken) {
+    constructor(RadicalTokenV1 _radicalToken, PatronageTokenV1 _patronageToken) {
         radicalToken = _radicalToken;
         patronageToken = _patronageToken;
     }

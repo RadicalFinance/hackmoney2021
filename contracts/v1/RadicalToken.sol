@@ -5,7 +5,7 @@ import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 
-contract RadicalToken is ERC721, Ownable {
+contract RadicalTokenV1 is ERC721, Ownable {
     using SafeMath for uint256;
 
     mapping (uint256 => uint256) private _tokenRate;

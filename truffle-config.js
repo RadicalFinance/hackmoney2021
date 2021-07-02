@@ -12,21 +12,21 @@ module.exports = {
     },
     rinkeby: {
       provider: function() {
-        return new HDWalletProvider(`${process.env.MNEMONIC}`, `https://rinkeby.infura.io/v3/${process.env.INFURA_ID}`)
+        return new HDWalletProvider(`${process.env.MNEMONIC}`, `wss://rinkeby.infura.io/ws/v3/${process.env.INFURA_ID}`)
       },
       network_id: 4,
-      gas: 0x989680
+      gas: 0x989680,
     },
     kovan: {
       provider: function() {
-        return new HDWalletProvider(`${process.env.MNEMONIC}`, `https://kovan.infura.io/v3/${process.env.INFURA_ID}`)
+        return new HDWalletProvider(`${process.env.MNEMONIC}`, `wss://kovan.infura.io/ws/v3/${process.env.INFURA_ID}`)
       },
       network_id: 42,
       gas: 0x989680
     },
     goerli: {
       provider: function() {
-        return new HDWalletProvider(`${process.env.MNEMONIC}`, `https://goerli.infura.io/v3/${process.env.INFURA_ID}`)
+        return new HDWalletProvider(`${process.env.MNEMONIC}`, `wss://goerli.infura.io/ws/v3/${process.env.INFURA_ID}`)
       },
       network_id: 5,
       gas: 0x989680
